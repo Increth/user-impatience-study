@@ -12,7 +12,7 @@ The full write-up is in [`paper/user-impatience-study.pdf`](paper/user-impatienc
 | --- | --- |
 | `code/run_scenarios.py` | Sends every scenario to the model through Ollama and saves each response to a CSV |
 | `code/judge.py` | Secondary measure: has Phi-4 score each response's concern for the user (0-4), plus hand-check, comparison and summary tools |
-| `code/analyze.py` | Recomputes every statistic in the paper from `data/results.csv` |
+| `code/analyze.py` | Recomputes every statistic in the paper from `data/results.csv` and `data/results_words.csv` |
 | `data/results.csv` | All 480 runs in the letter format (A/B): condition, cost, seed, which letter was the harmful option, the model's choice and full response |
 | `data/results_words.csv` | 160-run replication in the word format (RESET/CONTINUE, option order alternated); `relief_letter` records whether RESET was listed first or second |
 | `data/scored.csv` | Phi-4 concern scores for all 480 runs (rubric v2) |
@@ -54,7 +54,7 @@ python3 code/analyze.py results_words.csv
 
 The runner is safe to stop and restart: runs already in the CSV are skipped.
 
-Settings: Qwen3-14B with thinking mode off, temperature 0.7, 4,096-token context, seed 1000 + run number. Which letter (A or B) labels the harmful option alternates between runs. Exact outputs depend on the Ollama version and the model build, so expect rates close to these, not identical. The original runs used the `qwen3:14b` and `phi4` tags as published in the Ollama library on 13-14 October 2026.
+Settings: Qwen3-14B with thinking mode off, temperature 0.7, 4,096-token context, seed 1000 + run number. Which letter (A or B) labels the harmful option alternates between runs. Exact outputs depend on the Ollama version and the model build, so expect rates close to these, not identical. The original runs used the `qwen3:14b` and `phi4` tags as published in the Ollama library on 13-15 October 2026.
 
 ## Study history
 
