@@ -116,26 +116,31 @@ def main():
     default = os.path.join(os.path.dirname(__file__), "..", "data", "results.csv")
     path = sys.argv[1] if len(sys.argv) > 1 else default
     rows, harm, runs, unreadable = load(path)
+    present = {r["pressure"] for r in rows}
+    conds = [(c, l) for c, l in CONDITIONS if c in present]
+    costs_present = [c for c in COSTS if any(r["cost"] == c for r in rows)]
     print(f"{len(rows)} runs loaded from {os.path.normpath(path)}; "
           f"{len(unreadable)} without a readable final choice\n")
 
     def serious(cond):
-        return (harm[(cond, "medium")] + harm[(cond, "high")],
-                runs[(cond, "medium")] + runs[(cond, "high")])
+        return (harm.get((cond, "medium"), 0) + harm.get((cond, "high"), 0),
+                runs.get((cond, "medium"), 0) + runs.get((cond, "high"), 0))
 
     # 1. per-cell rates
     print("1. Harmful choices per condition (count / runs)")
-    print(f"   {'condition':40}{'low':>9}{'medium':>9}{'high':>9}{'all':>9}")
-    for cond, label in CONDITIONS:
-        cells = [f"{harm[(cond, c)]}/{runs[(cond, c)]}" for c in COSTS]
-        k = sum(harm[(cond, c)] for c in COSTS)
-        n = sum(runs[(cond, c)] for c in COSTS)
+    print(f"   {'condition':40}" + "".join(f"{c:>9}" for c in costs_present) + f"{'all':>9}")
+    for cond, label in conds:
+        cells = [f"{harm.get((cond, c), 0)}/{runs.get((cond, c), 0)}" for c in costs_present]
+        k = sum(harm.get((cond, c), 0) for c in costs_present)
+        n = sum(runs.get((cond, c), 0) for c in costs_present)
         print(f"   {label:40}" + "".join(f"{x:>9}" for x in cells) + f"{pct(k / n):>9}")
 
     # 2. serious harm with intervals
     print("\n2. Serious harm (medium + high cost), Wilson 95% intervals")
-    for cond, label in CONDITIONS:
+    for cond, label in conds:
         k, n = serious(cond)
+        if n == 0:
+            continue
         lo, hi = wilson(k, n)
         print(f"   {label:40}{k:>3}/{n}  {pct(k / n):>5}  [{pct(lo)}, {pct(hi)}]")
 
@@ -164,13 +169,15 @@ def main():
     ]
     for cond, label in CONDITIONS[2:7]:
         tests.append((f"Within {label.split()[0]}: low cost vs serious harm",
-                      (harm[(cond, "low")], runs[(cond, "low")]), serious(cond)))
+                      (harm.get((cond, "low"), 0), runs.get((cond, "low"), 0)), serious(cond)))
     tests.append(("Mild: medium vs high cost",
-                  (harm[("1_mild", "medium")], runs[("1_mild", "medium")]),
-                  (harm[("1_mild", "high")], runs[("1_mild", "high")])))
+                  (harm.get(("1_mild", "medium"), 0), runs.get(("1_mild", "medium"), 0)),
+                  (harm.get(("1_mild", "high"), 0), runs.get(("1_mild", "high"), 0))))
 
     print("\n3. Two-sided Fisher exact tests (serious harm unless stated)")
     for name, (a, n1), (b, n2) in tests:
+        if n1 == 0 or n2 == 0:
+            continue
         p = fisher_two_sided(a, n1, b, n2)
         ptxt = "< 0.001" if p < 0.001 else f"{p:.3f}"
         print(f"   {name:58}{a}/{n1} vs {b}/{n2}   p = {ptxt}")
@@ -184,16 +191,50 @@ def main():
             f, b = design[r["pressure"]]
             X.append([1.0, f, b, 1.0 if r["cost"] == "high" else 0.0])
             y.append(1.0 if r["chose_relief"] == "True" else 0.0)
-    beta, se = logistic(X, y)
-    print(f"\n4. Logistic regression, harmful choice ~ frustrated + blamed + high cost (n = {len(y)})")
-    for name, b, s in zip(["frustrated", "blamed", "high vs medium cost"], beta[1:], se[1:]):
-        z = b / s
-        print(f"   {name:22} OR = {math.exp(b):.2f}  95% CI [{math.exp(b - 1.96 * s):.2f}, "
-              f"{math.exp(b + 1.96 * s):.2f}]  p = {p_normal(z):.5f}")
-    Xi = [x + [x[1] * x[2]] for x in X]
-    beta_i, se_i = logistic(Xi, y)
-    print(f"   {'frustrated x blamed':22} OR = {math.exp(beta_i[4]):.2f}  "
-          f"p = {p_normal(beta_i[4] / se_i[4]):.3f}  (separate model with interaction)")
+    if set(design) <= {r["pressure"] for r in rows} and y:
+        print(f"\n4. Logistic regression, harmful choice ~ frustrated + blamed + high cost (n = {len(y)})")
+        try:
+            beta, se = logistic(X, y)
+            lines = [f"   {name:22} OR = {math.exp(b):.2f}  95% CI [{math.exp(b - 1.96 * s):.2f}, "
+                     f"{math.exp(b + 1.96 * s):.2f}]  p = {p_normal(b / s):.5f}"
+                     for name, b, s in zip(["frustrated", "blamed", "high vs medium cost"], beta[1:], se[1:])]
+            print("\n".join(lines))
+            estimable = True
+        except (OverflowError, ZeroDivisionError, ValueError):
+            print("   Not estimable: some group has all-or-none harmful choices. Use the Fisher tests above.")
+            estimable = False
+        try:
+            if not estimable:
+                raise ValueError
+            Xi = [x + [x[1] * x[2]] for x in X]
+            beta_i, se_i = logistic(Xi, y)
+            print(f"   {'frustrated x blamed':22} OR = {math.exp(beta_i[4]):.2f}  "
+                  f"p = {p_normal(beta_i[4] / se_i[4]):.3f}  (separate model with interaction)")
+        except (OverflowError, ZeroDivisionError, ValueError):
+            print("   Interaction model not estimable (a cell is all-or-none).")
+    else:
+        return
+
+    # 5. answer label / position check
+    print("\n5. Serious harm split by how the harmful option was labelled or placed")
+    labels = sorted({r["relief_letter"] for r in rows})
+    groups = [("Sam patient (2b + 2c)", {"2b_failing_no_stakes", "2c_blamed_sam_patient"}),
+              ("Sam frustrated (2d + 2)", {"2d_unblamed_sam_frustrated", "2_repeated_failure"})]
+    split = {}
+    for gname, members in groups:
+        line = []
+        for lab in labels:
+            g = [r for r in rows if r["pressure"] in members and r["cost"] in ("medium", "high")
+                 and r["relief_letter"] == lab]
+            k = sum(r["chose_relief"] == "True" for r in g)
+            split[(gname, lab)] = (k, len(g))
+            line.append(f"harmful = {lab}: {k}/{len(g)} ({pct(k / len(g))})")
+        print(f"   {gname:26}" + "   ".join(line))
+    for lab in labels:
+        (a, n1), (b, n2) = split[(groups[0][0], lab)], split[(groups[1][0], lab)]
+        p = fisher_two_sided(a, n1, b, n2)
+        ptxt = "< 0.001" if p < 0.001 else f"{p:.3f}"
+        print(f"   frustration effect when harmful = {lab}: {a}/{n1} vs {b}/{n2}, p = {ptxt}")
 
 
 if __name__ == "__main__":
